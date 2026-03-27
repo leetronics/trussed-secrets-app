@@ -264,23 +264,16 @@ impl<T: Client> Authenticator<T> {
         command: iso7816::command::CommandView<'_>,
         reply: &mut VecView<u8>,
     ) -> Result {
-        let client_authorized_before = self.state.runtime.client_authorized;
         self.state.runtime.client_newly_authorized = false;
 
         // debug_now!("inner respond, client_authorized {}", self.state.runtime.client_authorized);
         let result = self.inner_respond(command, reply);
 
-        // we want to clear the authorization flag *except* if it wasn't set before,
-        // but was set now.
-        // if !(!client_authorized_before && self.state.runtime.client_newly_authorized) {
-        // This is equivalent to the simpler formulation that stale authorization gets
-        // removed, unless refreshed during this round
-        if client_authorized_before || !self.state.runtime.client_newly_authorized {
-            self.state.runtime.client_authorized = false;
-        }
-        if self.state.runtime.client_newly_authorized {
-            self.state.runtime.client_authorized = true;
-        }
+        // Stay authorized as long as the PIN key is cached (session-scoped auth).
+        // Also allow one-time authorization from set_pin (client_newly_authorized).
+        self.state.runtime.client_authorized =
+            self.state.runtime.encryption_key.is_some()
+                || self.state.runtime.client_newly_authorized;
 
         result
     }
@@ -342,21 +335,8 @@ impl<T: Client> Authenticator<T> {
             _ => Err(Status::ConditionsOfUseNotSatisfied),
         };
 
-        // Call logout after processing, so the PIN-based KEK would not be kept in the memory
-        // DESIGN (see design.md): -> Per-request authorization
-        if self.state.runtime.encryption_key.is_some() {
-            // Do not call automatic logout after these commands
-            match command {
-                // Always leave PIN KEK after verify PIN
-                Command::VerifyPin(_) => {}
-                _ => {
-                    if self.state.runtime.previously.is_none() {
-                        debug_now!("Calling logout");
-                        self._extension_logout().ok();
-                    }
-                }
-            }
-        };
+        // PIN key is kept in memory for the session (session-scoped auth).
+        // It is only cleared on explicit reset/logout or power cycle.
 
         result
     }
@@ -467,8 +447,8 @@ impl<T: Client> Authenticator<T> {
         match request_data.version {
             1 => {
                 let props = credential.get_properties_byte();
-                debug_now!(
-                    "Serializing credential '{}' with properties={}",
+                info_now!(
+                    "Serializing credential '{:?}' with properties={}",
                     credential.label.as_slice(),
                     props
                 );
