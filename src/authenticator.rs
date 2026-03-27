@@ -466,12 +466,18 @@ impl<T: Client> Authenticator<T> {
     ) -> core::result::Result<(), u8> {
         match request_data.version {
             1 => {
+                let props = credential.get_properties_byte();
+                debug_now!(
+                    "Serializing credential '{}' with properties={}",
+                    credential.label.as_slice(),
+                    props
+                );
                 reply.push(0x72)?;
                 reply.push((credential.label.len() + 2) as u8)?;
                 reply.push(oath::combine(credential.kind, credential.algorithm))?;
                 reply.extend_from_slice(&credential.label).map_err(|_| 0)?;
                 // Add metadata/properties byte
-                reply.push(credential.get_properties_byte())?;
+                reply.push(props)?;
             }
             0 => {
                 reply.push(0x72)?;

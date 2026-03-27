@@ -95,19 +95,34 @@ impl From<&CredentialFlat> for PropertiesByte {
         if cred.touch_required {
             res |= PropertiesByte::touch_required;
         }
+
+        // Debug logging for encryption_key_type
+        debug_now!(
+            "get_properties_byte: encryption_key_type={:?}",
+            cred.encryption_key_type
+        );
+
         if cred.encryption_key_type.is_none() {
             warn_now!("encryption_key_type is not set");
         }
-        if cred
+
+        let is_pin_based = cred
             .encryption_key_type
-            .unwrap_or(EncryptionKeyType::PinBased)
-            == EncryptionKeyType::PinBased
-        {
+            .map(|kt| kt == EncryptionKeyType::PinBased)
+            .unwrap_or(false);
+
+        debug_now!("get_properties_byte: is_pin_based={}", is_pin_based);
+
+        if is_pin_based {
             res |= PropertiesByte::encrypted;
+            debug_now!("get_properties_byte: Setting encrypted flag");
         }
+
         if cred.login.is_some() || cred.password.is_some() {
             res |= PropertiesByte::pws_data_exist;
         }
+
+        debug_now!("get_properties_byte: final properties={}", res.bits());
         res
     }
 }
