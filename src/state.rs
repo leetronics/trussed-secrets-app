@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::command::EncryptionKeyType;
 use cbor_smol::cbor_deserialize;
-use encrypted_container::EncryptedDataContainer;
+use encrypted_container::{EncryptedDataContainer, KEY_TYPE_HARDWARE, KEY_TYPE_PIN_BASED};
 use trussed_core::mechanisms::Chacha8Poly1305;
 use trussed_core::types::Message;
 use trussed_core::{
@@ -105,12 +105,24 @@ impl State {
             .get_encryption_key_from_state(encryption_key_type)
             .map_err(|_| Status::SecurityStatusNotSatisfied)?;
 
-        let data = EncryptedDataContainer::from_obj(trussed, obj, None, encryption_key).map_err(
-            |_err| {
-                error!("error encrypting object: {:?}", _err);
-                Status::UnspecifiedPersistentExecutionError
-            },
-        )?;
+        // Determine key type byte for storage
+        let key_type = match encryption_key_type {
+            Some(EncryptionKeyType::PinBased) => KEY_TYPE_PIN_BASED,
+            _ => KEY_TYPE_HARDWARE,
+        };
+
+        // Use the new function that stores key type in the container
+        let data = EncryptedDataContainer::from_obj_with_key_type(
+            trussed,
+            obj,
+            None,
+            encryption_key,
+            key_type,
+        )
+        .map_err(|_err| {
+            error!("error encrypting object: {:?}", _err);
+            Status::UnspecifiedPersistentExecutionError
+        })?;
         let data_serialized: Message = data.try_into().map_err(|_err| {
             error!("error serializing container: {:?}", _err);
             Status::UnspecifiedPersistentExecutionError
@@ -152,30 +164,78 @@ impl State {
         T: Chacha8Poly1305,
         O: DeserializeOwned,
     {
-        // We do not know what key was used for encryption
-        // If the value is not set, we should default to PIN based encryption key. Otherwise Hardware based one.
-        // Order: PIN-based decryption (if PIN key is set), then hardware based key decryption
+        // Check the key type from the container header first
+        let key_type = EncryptedDataContainer::peek_key_type(&ser_encrypted);
 
-        for kt in &[EncryptionKeyType::PinBased, EncryptionKeyType::Hardware] {
-            debug_now!("Trying decryption with {:?}", kt);
-            let encryption_key = self.get_encryption_key_from_state(Some(*kt));
+        match key_type {
+            Some(KEY_TYPE_PIN_BASED) => {
+                // This is a PIN-protected credential - only try PIN key
+                debug_now!("Container requires PIN-based key");
+                let encryption_key =
+                    self.get_encryption_key_from_state(Some(EncryptionKeyType::PinBased));
 
-            match encryption_key {
-                Err(_) => {
-                    debug_now!("Key {:?} is not available", kt);
-                    continue;
-                }
-                Ok(key) => {
-                    let res =
-                        EncryptedDataContainer::decrypt_from_bytes(trussed, &ser_encrypted, key);
-                    debug_now!("Decryption result with {:?}: {:?}", kt, res.is_ok());
-                    if res.is_ok() {
-                        return (res, Some(kt.clone()));
+                match encryption_key {
+                    Err(_) => {
+                        debug_now!(
+                            "PIN key not available - cannot decrypt PIN-protected credential"
+                        );
+                        (Err(encrypted_container::Error::WrongKeyType), None)
+                    }
+                    Ok(key) => {
+                        let res = EncryptedDataContainer::decrypt_from_bytes(
+                            trussed,
+                            &ser_encrypted,
+                            key,
+                        );
+                        debug_now!("PIN-based decryption result: {:?}", res.is_ok());
+                        if res.is_ok() {
+                            (res, Some(EncryptionKeyType::PinBased))
+                        } else {
+                            // Decryption failed - wrong key or corrupted data
+                            (Err(encrypted_container::Error::FailedDecryption), None)
+                        }
                     }
                 }
             }
+            Some(KEY_TYPE_HARDWARE) | None => {
+                // Hardware-encrypted credential or legacy file without key type
+                // For legacy files, try Hardware key first, then PIN as fallback for backward compatibility
+                debug_now!("Container requires Hardware-based key (or legacy file)");
+
+                // Try Hardware key first
+                let hw_key = self.get_encryption_key_from_state(Some(EncryptionKeyType::Hardware));
+                if let Ok(key) = hw_key {
+                    let res =
+                        EncryptedDataContainer::decrypt_from_bytes(trussed, &ser_encrypted, key);
+                    debug_now!("Hardware-based decryption result: {:?}", res.is_ok());
+                    if res.is_ok() {
+                        return (res, Some(EncryptionKeyType::Hardware));
+                    }
+                }
+
+                // If Hardware key failed or not available, try PIN key (for legacy files)
+                // Note: This maintains backward compatibility with old credentials
+                let pin_key = self.get_encryption_key_from_state(Some(EncryptionKeyType::PinBased));
+                if let Ok(key) = pin_key {
+                    let res =
+                        EncryptedDataContainer::decrypt_from_bytes(trussed, &ser_encrypted, key);
+                    debug_now!(
+                        "PIN-based decryption result (legacy fallback): {:?}",
+                        res.is_ok()
+                    );
+                    if res.is_ok() {
+                        return (res, Some(EncryptionKeyType::PinBased));
+                    }
+                }
+
+                (Err(encrypted_container::Error::FailedDecryption), None)
+            }
+            _ => {
+                // Unknown key type - treat as error
+                warn_now!("Unknown key type in container: {:?}", key_type);
+                (Err(encrypted_container::Error::FailedDecryption), None)
+            }
         }
-        (Err(encrypted_container::Error::FailedDecryption), None)
     }
 
     pub fn file_exists<T: FilesystemClient>(

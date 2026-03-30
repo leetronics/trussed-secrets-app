@@ -289,6 +289,7 @@ impl<'l> TryFrom<&'l [u8]> for SetPin<'l> {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RenameCredential<'l> {
     pub label: &'l [u8],

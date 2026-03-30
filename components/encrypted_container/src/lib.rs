@@ -14,3 +14,6 @@ mod error;
 pub type EncryptedDataContainer = container::EncryptedDataContainer;
 pub type Error = error::Error;
 pub type Result<T = ()> = error::Result<T>;
+
+// Re-export key type constants
+pub use container::{KEY_TYPE_HARDWARE, KEY_TYPE_PIN_BASED};

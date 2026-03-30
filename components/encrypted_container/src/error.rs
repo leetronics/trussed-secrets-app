@@ -14,6 +14,10 @@ pub enum Error {
     EmptyContainerData,
     FailedDecryption,
     EmptyDecryptedData,
+    /// The encryption key type doesn't match the container's key type.
+    /// This happens when trying to decrypt a PIN-protected credential with the Hardware key,
+    /// or vice versa.
+    WrongKeyType,
 }
 
 pub type Result<T = ()> = core::result::Result<T, Error>;
@@ -24,19 +28,16 @@ impl From<Error> for trussed_core::Error {
             Error::DeserializationToContainerError => {
                 trussed_core::Error::InvalidSerializationFormat
             }
-            Error::DeserializationToObjectError => {
-                trussed_core::Error::InvalidSerializationFormat
-            }
+            Error::DeserializationToObjectError => trussed_core::Error::InvalidSerializationFormat,
             Error::ObjectSerializationError => trussed_core::Error::InvalidSerializationFormat,
             Error::ContainerSerializationError => trussed_core::Error::InvalidSerializationFormat,
             Error::SerializationBufferTooSmall => trussed_core::Error::InternalError,
             Error::FailedEncryption => trussed_core::Error::InternalError,
-            Error::FailedContainerSerialization => {
-                trussed_core::Error::InvalidSerializationFormat
-            }
+            Error::FailedContainerSerialization => trussed_core::Error::InvalidSerializationFormat,
             Error::EmptyContainerData => trussed_core::Error::WrongMessageLength,
             Error::FailedDecryption => trussed_core::Error::InvalidSerializationFormat,
             Error::EmptyDecryptedData => trussed_core::Error::WrongMessageLength,
+            Error::WrongKeyType => trussed_core::Error::WrongKeyKind,
         }
     }
 }
